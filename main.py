@@ -23,7 +23,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(
     title="Topic Generator API",
-    description="Generates blog topics, keywords, outlines, and word count recommendations.",
+    description="Generates blog topics, outlines, keywords, word count recommendations, and full blog articles.",
     version="1.0.0"
 )
 
@@ -42,6 +42,15 @@ class KeywordOutlineResponse(BaseModel):
     keywords: List[str]
     outline: str
     recommended_word_count: int
+
+class BlogGenerationRequest(BaseModel):
+    topic: str
+    keywords: List[str]
+    outline: str
+    recommended_word_count: int
+
+class BlogGenerationResponse(BaseModel):
+    blog: str
 
 @app.post("/generate-topics", response_model=TopicResponse)
 async def generate_topics(request: TopicRequest):
@@ -198,7 +207,6 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
             elif in_word_count:
                 recommended_word_count_str += line
 
-        # Extract numeric word count
         match = re.search(r"\d+", recommended_word_count_str.replace(",", ""))
         if not match:
             raise ValueError(f"Could not parse recommended word count from: '{recommended_word_count_str}'")
@@ -213,6 +221,78 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
             outline=outline.strip(),
             recommended_word_count=recommended_word_count
         )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+from bs4 import BeautifulSoup
+
+@app.post("/generate-blog", response_model=BlogGenerationResponse)
+async def generate_blog(request: BlogGenerationRequest):
+    """
+    Generates a full SEO-optimized blog article following the given outline, keywords, and word count,
+    by chunking generation per heading and returning clean, validated HTML.
+    """
+    try:
+        # Split outline into sections
+        headings = [line.strip() for line in request.outline.strip().split("\n") if line.strip()]
+
+        if not headings:
+            raise ValueError("No headings found in the outline.")
+
+        # Calculate word budget per section
+        total_headings = len(headings)
+        target_word_count = request.recommended_word_count
+        avg_words_per_section = target_word_count // total_headings
+
+        sections = []
+
+        for heading in headings:
+            section_prompt = (
+                f"You are an expert SEO content writer.\n\n"
+                f"Write an HTML-formatted section titled '{heading}' for a blog about '{request.topic}'.\n\n"
+                f"Requirements:\n"
+                f"- The section should be approximately {avg_words_per_section} words.\n"
+                f"- Include these keywords organically: {', '.join(request.keywords)}.\n"
+                f"- Use proper HTML formatting:\n"
+                f"  - Heading in <h2>\n"
+                f"  - Paragraphs in <p>\n"
+                f"  - Bullet lists in <ul><li>\n"
+                f"- Do NOT include emojis.\n"
+                f"- Do NOT include any extra commentary or explanations.\n"
+                f"- Do NOT include Markdown code fences (like ```html).\n"
+                f"- Return ONLY valid HTML.\n"
+            )
+
+            completion = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You generate clean, semantic HTML for web content."},
+                    {"role": "user", "content": section_prompt}
+                ],
+                temperature=0.5,
+                max_tokens=1500
+            )
+
+            section_html = completion.choices[0].message.content.strip()
+
+            # Remove any Markdown code fences or explanations
+            section_html = section_html.replace("```html", "").replace("```", "").strip()
+
+            # Clean up newlines and spaces between tags
+            section_html = section_html.replace("\n", " ").replace("> <", "><").strip()
+
+            # Validate and prettify HTML using BeautifulSoup
+            soup = BeautifulSoup(section_html, "html.parser")
+            validated_html = str(soup)
+
+            sections.append(validated_html)
+
+        # Combine all sections into one HTML string
+        final_blog_html = "".join(sections)
+
+        return BlogGenerationResponse(blog=final_blog_html)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
