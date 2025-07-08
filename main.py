@@ -4,39 +4,47 @@ from typing import List
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
+import requests
+from bs4 import BeautifulSoup
+import re
 
-# Load .env file
+# Load .env
 load_dotenv()
 
-# Get API key
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise RuntimeError("OPENAI_API_KEY not found in .env file.")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
-# Initialize OpenAI client
-client = OpenAI(api_key=api_key)
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY not found in .env.")
+if not SERP_API_KEY:
+    raise RuntimeError("SERP_API_KEY not found in .env.")
 
-# FastAPI app
+client = OpenAI(api_key=OPENAI_API_KEY)
+
 app = FastAPI(
-    title="Zooli.ai AI APIs",
+    title="Topic Generator API",
+    description="Generates blog topics, keywords, outlines, and word count recommendations.",
     version="1.0.0"
 )
 
-# Request model
 class TopicRequest(BaseModel):
     target_audience: str
     industry: str
     primary_goal: str
 
-# Response model
 class TopicResponse(BaseModel):
     topics: List[str]
 
+class KeywordOutlineRequest(BaseModel):
+    topic: str
+
+class KeywordOutlineResponse(BaseModel):
+    keywords: List[str]
+    outline: str
+    recommended_word_count: int
+
 @app.post("/generate-topics", response_model=TopicResponse)
 async def generate_topics(request: TopicRequest):
-    """
-    Generate 3-5 blog topic ideas.
-    """
     prompt = (
         f"Generate 3 to 5 creative blog topic ideas targeting '{request.target_audience}' "
         f"in the '{request.industry}' industry, with the primary goal of '{request.primary_goal}'. "
@@ -55,8 +63,7 @@ async def generate_topics(request: TopicRequest):
         )
 
         raw_text = completion.choices[0].message.content.strip()
-        
-        # Split into individual topics
+
         topics = []
         for line in raw_text.split("\n"):
             line = line.strip()
@@ -69,6 +76,143 @@ async def generate_topics(request: TopicRequest):
             raise ValueError("No topics were generated.")
 
         return TopicResponse(topics=topics)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate-keywords-outline", response_model=KeywordOutlineResponse)
+async def generate_keywords_outline(request: KeywordOutlineRequest):
+    serp_url = "https://serpapi.com/search.json"
+
+    params = {
+        "q": request.topic,
+        "api_key": SERP_API_KEY,
+        "engine": "google",
+        "num": "3"
+    }
+
+    try:
+        serp_response = requests.get(serp_url, params=params, timeout=10)
+        serp_response.raise_for_status()
+        data = serp_response.json()
+
+        organic_results = data.get("organic_results", [])
+        if not organic_results:
+            raise ValueError("No organic results found.")
+
+        urls = [result.get("link") for result in organic_results[:3] if result.get("link")]
+        if not urls:
+            raise ValueError("No URLs found in SERP results.")
+
+        combined_text = ""
+        total_words = 0
+        MAX_WORDS_PER_PAGE = 2000
+        MAX_TOTAL_WORDS = 10000
+
+        for url in urls:
+            try:
+                page = requests.get(url, timeout=10)
+                page.raise_for_status()
+                soup = BeautifulSoup(page.text, "html.parser")
+                text = soup.get_text(separator="\n").strip()
+
+                if not text:
+                    continue
+
+                words = text.split()
+                truncated_words = words[:MAX_WORDS_PER_PAGE]
+                truncated_text = " ".join(truncated_words)
+
+                word_count = len(truncated_words)
+                total_words += word_count
+
+                combined_text += truncated_text + "\n\n"
+
+            except Exception as fetch_err:
+                print(f"Error fetching {url}: {fetch_err}")
+                continue
+
+        if not combined_text.strip():
+            raise ValueError("Failed to extract any content from pages.")
+
+        all_words = combined_text.split()
+        if len(all_words) > MAX_TOTAL_WORDS:
+            all_words = all_words[:MAX_TOTAL_WORDS]
+        safe_text = " ".join(all_words)
+
+        prompt = (
+            "Based on the following content, extract a list of the top 10 SEO keywords, "
+            "create a detailed blog outline, and suggest an appropriate recommended word count as a number only (e.g., 2000).\n\n"
+            f"CONTENT:\n{safe_text}\n\n"
+            f"The combined word count of the reference articles is approximately {total_words} words.\n\n"
+            "Return the output formatted as:\n"
+            "Keywords:\n"
+            "1. keyword1\n2. keyword2\n...\n\nOutline:\nOutline text here.\n\nRecommended Word Count:\nNumber only."
+        )
+
+        completion = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are an expert SEO content strategist."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=800
+        )
+
+        response_text = completion.choices[0].message.content.strip()
+
+        keywords = []
+        outline = ""
+        recommended_word_count_str = ""
+        in_keywords = False
+        in_outline = False
+        in_word_count = False
+
+        for line in response_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if line.lower().startswith("keywords"):
+                in_keywords = True
+                in_outline = False
+                in_word_count = False
+                continue
+            if line.lower().startswith("outline"):
+                in_keywords = False
+                in_outline = True
+                in_word_count = False
+                continue
+            if line.lower().startswith("recommended word count"):
+                in_keywords = False
+                in_outline = False
+                in_word_count = True
+                continue
+            if in_keywords:
+                kw = line.lstrip("0123456789.-) ").strip()
+                if kw:
+                    keywords.append(kw)
+            elif in_outline:
+                outline += line + "\n"
+            elif in_word_count:
+                recommended_word_count_str += line
+
+        # Extract numeric word count
+        match = re.search(r"\d+", recommended_word_count_str.replace(",", ""))
+        if not match:
+            raise ValueError(f"Could not parse recommended word count from: '{recommended_word_count_str}'")
+
+        recommended_word_count = int(match.group())
+
+        if not keywords or not outline:
+            raise ValueError("Failed to parse keywords or outline.")
+
+        return KeywordOutlineResponse(
+            keywords=keywords,
+            outline=outline.strip(),
+            recommended_word_count=recommended_word_count
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
