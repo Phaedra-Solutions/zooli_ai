@@ -147,28 +147,37 @@ async def generate_topics(request: TopicRequest):
 
 @app.post("/generate-keywords-outline", response_model=KeywordOutlineResponse)
 async def generate_keywords_outline(request: KeywordOutlineRequest):
-    serp_url = "https://serpapi.com/search.json"
-
-    params = {
-        "q": request.topic,
-        "api_key": SERP_API_KEY,
-        "engine": "google",
-        "num": "3"
-    }
-
+    """
+    Generates keywords and outline by fetching top 3 search results from Serper API.
+    """
     try:
-        serp_response = requests.get(serp_url, params=params, timeout=10)
-        serp_response.raise_for_status()
-        data = serp_response.json()
+        # Prepare Serper API call
+        serper_url = "https://google.serper.dev/search"
+        headers = {
+            "X-API-KEY": os.getenv("SERPER_API_KEY")
+        }
+        if not headers["X-API-KEY"]:
+            raise ValueError("SERPER_API_KEY not found in environment.")
 
-        organic_results = data.get("organic_results", [])
+        payload = {
+            "q": request.topic,
+            "num": 3
+        }
+
+        serper_response = requests.post(serper_url, json=payload, headers=headers, timeout=10)
+        serper_response.raise_for_status()
+        data = serper_response.json()
+
+        organic_results = data.get("organic", [])
         if not organic_results:
-            raise ValueError("No organic results found.")
+            raise ValueError("No organic results found in Serper API response.")
 
-        urls = [result.get("link") for result in organic_results[:3] if result.get("link")]
+        # Extract top 3 URLs
+        urls = [item.get("link") for item in organic_results[:3] if item.get("link")]
         if not urls:
-            raise ValueError("No URLs found in SERP results.")
+            raise ValueError("No URLs found in organic results.")
 
+        # Fetch and combine content
         combined_text = ""
         total_words = 0
         MAX_WORDS_PER_PAGE = 2000
@@ -179,7 +188,7 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
                 page = requests.get(url, timeout=10)
                 page.raise_for_status()
                 soup = BeautifulSoup(page.text, "html.parser")
-                text = soup.get_text(separator="\n").strip()
+                text = soup.get_text(separator=" ").strip()
 
                 if not text:
                     continue
@@ -188,10 +197,8 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
                 truncated_words = words[:MAX_WORDS_PER_PAGE]
                 truncated_text = " ".join(truncated_words)
 
-                word_count = len(truncated_words)
-                total_words += word_count
-
-                combined_text += truncated_text + "\n\n"
+                total_words += len(truncated_words)
+                combined_text += truncated_text + " "
 
             except Exception as fetch_err:
                 print(f"Error fetching {url}: {fetch_err}")
@@ -200,11 +207,13 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
         if not combined_text.strip():
             raise ValueError("Failed to extract any content from pages.")
 
+        # Truncate combined text
         all_words = combined_text.split()
         if len(all_words) > MAX_TOTAL_WORDS:
             all_words = all_words[:MAX_TOTAL_WORDS]
         safe_text = " ".join(all_words)
 
+        # Prompt OpenAI for keywords and outline
         prompt = (
             "Based on the following content, extract a list of the top 10 SEO keywords, "
             "create a detailed blog outline, and suggest an appropriate recommended word count as a number only (e.g., 2000).\n\n"
@@ -227,6 +236,7 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
 
         response_text = completion.choices[0].message.content.strip()
 
+        # Parse response
         keywords = []
         outline = ""
         recommended_word_count_str = ""
