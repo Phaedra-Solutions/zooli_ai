@@ -52,6 +52,61 @@ class BlogGenerationRequest(BaseModel):
 class BlogGenerationResponse(BaseModel):
     blog: str
 
+# --- Models ---
+class TopicRequest(BaseModel):
+    target_audience: str
+    industry: str
+    primary_goal: str
+
+class TopicResponse(BaseModel):
+    topics: List[str]
+
+class KeywordOutlineRequest(BaseModel):
+    topic: str
+
+class KeywordOutlineResponse(BaseModel):
+    keywords: List[str]
+    outline: str
+    recommended_word_count: int
+
+class BlogGenerationRequest(BaseModel):
+    topic: str
+    keywords: List[str]
+    outline: str
+    recommended_word_count: int
+
+class BlogGenerationResponse(BaseModel):
+    blog: str
+
+class ImageGenerationRequest(BaseModel):
+    prompt: str
+
+class ImageGenerationResponse(BaseModel):
+    image_url: str
+
+# --- Existing endpoints omitted for brevity ---
+# (Assume you already have /generate-topics, /generate-keywords-outline, /generate-blog as we built before.)
+
+# --- Image generation endpoint ---
+@app.post("/image_gen_manual", response_model=ImageGenerationResponse)
+async def image_gen_manual(request: ImageGenerationRequest):
+    """
+    Generates an image from a text prompt using OpenAI's DALL·E API.
+    """
+    try:
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=request.prompt,
+            n=1,
+            size="1024x1024"
+        )
+        image_url = response.data[0].url
+
+        return ImageGenerationResponse(image_url=image_url)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/generate-topics", response_model=TopicResponse)
 async def generate_topics(request: TopicRequest):
     prompt = (
