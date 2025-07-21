@@ -12,12 +12,12 @@ import re
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SERP_API_KEY = os.getenv("SERP_API_KEY")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY not found in .env.")
-if not SERP_API_KEY:
-    raise RuntimeError("SERP_API_KEY not found in .env.")
+if not SERPER_API_KEY:
+    raise RuntimeError("SERPER_API_KEY not found in .env.")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -28,35 +28,9 @@ app = FastAPI(
 )
 
 class TopicRequest(BaseModel):
-    target_audience: str
-    industry: str
-    primary_goal: str
-
-class TopicResponse(BaseModel):
-    topics: List[str]
-
-class KeywordOutlineRequest(BaseModel):
-    topic: str
-
-class KeywordOutlineResponse(BaseModel):
-    keywords: List[str]
-    outline: str
-    recommended_word_count: int
-
-class BlogGenerationRequest(BaseModel):
-    topic: str
-    keywords: List[str]
-    outline: str
-    recommended_word_count: int
-
-class BlogGenerationResponse(BaseModel):
-    blog: str
-
-# --- Models ---
-class TopicRequest(BaseModel):
-    target_audience: str
-    industry: str
-    primary_goal: str
+    niche: str
+    intent: str
+    audience: str
 
 class TopicResponse(BaseModel):
     topics: List[str]
@@ -84,15 +58,8 @@ class ImageGenerationRequest(BaseModel):
 class ImageGenerationResponse(BaseModel):
     image_url: str
 
-# --- Existing endpoints omitted for brevity ---
-# (Assume you already have /generate-topics, /generate-keywords-outline, /generate-blog as we built before.)
-
-# --- Image generation endpoint ---
 @app.post("/image_gen_manual", response_model=ImageGenerationResponse)
 async def image_gen_manual(request: ImageGenerationRequest):
-    """
-    Generates an image from a text prompt using OpenAI's DALL·E API.
-    """
     try:
         response = client.images.generate(
             model="dall-e-3",
@@ -101,20 +68,17 @@ async def image_gen_manual(request: ImageGenerationRequest):
             size="1024x1024"
         )
         image_url = response.data[0].url
-
         return ImageGenerationResponse(image_url=image_url)
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate-topics", response_model=TopicResponse)
 async def generate_topics(request: TopicRequest):
     prompt = (
-        f"Generate 3 to 5 creative blog topic ideas targeting '{request.target_audience}' "
-        f"in the '{request.industry}' industry, with the primary goal of '{request.primary_goal}'. "
+        f"Generate 3 to 5 creative blog topic ideas in the niche '{request.niche}', "
+        f"with the intent of '{request.intent}', targeted at '{request.audience}'. "
         "Return the topics as a numbered list."
     )
-
     try:
         completion = client.chat.completions.create(
             model="gpt-4",
@@ -125,9 +89,7 @@ async def generate_topics(request: TopicRequest):
             temperature=0.7,
             max_tokens=300
         )
-
         raw_text = completion.choices[0].message.content.strip()
-
         topics = []
         for line in raw_text.split("\n"):
             line = line.strip()
@@ -135,71 +97,45 @@ async def generate_topics(request: TopicRequest):
                 topic = line.lstrip("0123456789.-) ").strip()
                 if topic:
                     topics.append(topic)
-
         if not topics:
             raise ValueError("No topics were generated.")
-
         return TopicResponse(topics=topics)
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/generate-keywords-outline", response_model=KeywordOutlineResponse)
 async def generate_keywords_outline(request: KeywordOutlineRequest):
-    """
-    Generates keywords and outline by fetching top 3 search results from Serper API.
-    """
     try:
-        # Prepare Serper API call
         serper_url = "https://google.serper.dev/search"
-        headers = {
-            "X-API-KEY": os.getenv("SERPER_API_KEY")
-        }
-        if not headers["X-API-KEY"]:
-            raise ValueError("SERPER_API_KEY not found in environment.")
-
-        payload = {
-            "q": request.topic,
-            "num": 3
-        }
-
+        headers = {"X-API-KEY": SERPER_API_KEY}
+        payload = {"q": request.topic, "num": 3}
         serper_response = requests.post(serper_url, json=payload, headers=headers, timeout=10)
         serper_response.raise_for_status()
         data = serper_response.json()
-
         organic_results = data.get("organic", [])
         if not organic_results:
             raise ValueError("No organic results found in Serper API response.")
-
-        # Extract top 3 URLs
         urls = [item.get("link") for item in organic_results[:3] if item.get("link")]
         if not urls:
             raise ValueError("No URLs found in organic results.")
 
-        # Fetch and combine content
         combined_text = ""
         total_words = 0
         MAX_WORDS_PER_PAGE = 2000
         MAX_TOTAL_WORDS = 10000
-
         for url in urls:
             try:
                 page = requests.get(url, timeout=10)
                 page.raise_for_status()
                 soup = BeautifulSoup(page.text, "html.parser")
                 text = soup.get_text(separator=" ").strip()
-
                 if not text:
                     continue
-
                 words = text.split()
                 truncated_words = words[:MAX_WORDS_PER_PAGE]
                 truncated_text = " ".join(truncated_words)
-
                 total_words += len(truncated_words)
                 combined_text += truncated_text + " "
-
             except Exception as fetch_err:
                 print(f"Error fetching {url}: {fetch_err}")
                 continue
@@ -207,21 +143,18 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
         if not combined_text.strip():
             raise ValueError("Failed to extract any content from pages.")
 
-        # Truncate combined text
         all_words = combined_text.split()
         if len(all_words) > MAX_TOTAL_WORDS:
             all_words = all_words[:MAX_TOTAL_WORDS]
         safe_text = " ".join(all_words)
 
-        # Prompt OpenAI for keywords and outline
         prompt = (
             "Based on the following content, extract a list of the top 10 SEO keywords, "
             "create a detailed blog outline, and suggest an appropriate recommended word count as a number only (e.g., 2000).\n\n"
             f"CONTENT:\n{safe_text}\n\n"
             f"The combined word count of the reference articles is approximately {total_words} words.\n\n"
             "Return the output formatted as:\n"
-            "Keywords:\n"
-            "1. keyword1\n2. keyword2\n...\n\nOutline:\nOutline text here.\n\nRecommended Word Count:\nNumber only."
+            "Keywords:\n1. keyword1\n2. keyword2\n...\n\nOutline:\nOutline text here.\n\nRecommended Word Count:\nNumber only."
         )
 
         completion = client.chat.completions.create(
@@ -235,33 +168,23 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
         )
 
         response_text = completion.choices[0].message.content.strip()
-
-        # Parse response
         keywords = []
         outline = ""
         recommended_word_count_str = ""
-        in_keywords = False
-        in_outline = False
-        in_word_count = False
+        in_keywords = in_outline = in_word_count = False
 
         for line in response_text.split("\n"):
             line = line.strip()
             if not line:
                 continue
             if line.lower().startswith("keywords"):
-                in_keywords = True
-                in_outline = False
-                in_word_count = False
+                in_keywords, in_outline, in_word_count = True, False, False
                 continue
             if line.lower().startswith("outline"):
-                in_keywords = False
-                in_outline = True
-                in_word_count = False
+                in_keywords, in_outline, in_word_count = False, True, False
                 continue
             if line.lower().startswith("recommended word count"):
-                in_keywords = False
-                in_outline = False
-                in_word_count = True
+                in_keywords, in_outline, in_word_count = False, False, True
                 continue
             if in_keywords:
                 kw = line.lstrip("0123456789.-) ").strip()
@@ -286,33 +209,21 @@ async def generate_keywords_outline(request: KeywordOutlineRequest):
             outline=outline.strip(),
             recommended_word_count=recommended_word_count
         )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-from bs4 import BeautifulSoup
-
 @app.post("/generate-blog", response_model=BlogGenerationResponse)
 async def generate_blog(request: BlogGenerationRequest):
-    """
-    Generates a full SEO-optimized blog article following the given outline, keywords, and word count,
-    by chunking generation per heading and returning clean, validated HTML.
-    """
     try:
-        # Split outline into sections
         headings = [line.strip() for line in request.outline.strip().split("\n") if line.strip()]
-
         if not headings:
             raise ValueError("No headings found in the outline.")
 
-        # Calculate word budget per section
         total_headings = len(headings)
         target_word_count = request.recommended_word_count
         avg_words_per_section = target_word_count // total_headings
 
         sections = []
-
         for heading in headings:
             section_prompt = (
                 f"You are an expert SEO content writer.\n\n"
@@ -329,7 +240,6 @@ async def generate_blog(request: BlogGenerationRequest):
                 f"- Do NOT include Markdown code fences (like ```html).\n"
                 f"- Return ONLY valid HTML.\n"
             )
-
             completion = client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -339,25 +249,14 @@ async def generate_blog(request: BlogGenerationRequest):
                 temperature=0.5,
                 max_tokens=1500
             )
-
             section_html = completion.choices[0].message.content.strip()
-
-            # Remove any Markdown code fences or explanations
             section_html = section_html.replace("```html", "").replace("```", "").strip()
-
-            # Clean up newlines and spaces between tags
             section_html = section_html.replace("\n", " ").replace("> <", "><").strip()
-
-            # Validate and prettify HTML using BeautifulSoup
             soup = BeautifulSoup(section_html, "html.parser")
             validated_html = str(soup)
-
             sections.append(validated_html)
 
-        # Combine all sections into one HTML string
         final_blog_html = "".join(sections)
-
         return BlogGenerationResponse(blog=final_blog_html)
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
