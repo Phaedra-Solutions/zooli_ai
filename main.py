@@ -8,26 +8,23 @@ import requests
 from bs4 import BeautifulSoup
 import re
 
-# Load .env
+# Load environment variables
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
 if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY not found in .env.")
+    raise RuntimeError("OPENAI_API_KEY not found in .env")
 if not SERPER_API_KEY:
-    raise RuntimeError("SERPER_API_KEY not found in .env.")
+    raise RuntimeError("SERPER_API_KEY not found in .env")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-app = FastAPI(
-    title="Topic Generator API",
-    description="Generates blog topics, outlines, keywords, word count recommendations, and full blog articles.",
-    version="1.0.0"
-)
+app = FastAPI(title="Topic + Blog Generator API", version="1.0")
 
-# ---------- Models ----------
+# ---------- MODELS ----------
+
 class TopicRequest(BaseModel):
     niche: str
     intent: str
@@ -36,23 +33,6 @@ class TopicRequest(BaseModel):
 
 class TopicResponse(BaseModel):
     topics: List[str]
-
-class KeywordOutlineRequest(BaseModel):
-    topic: str
-
-class KeywordOutlineResponse(BaseModel):
-    keywords: List[str]
-    outline: str
-    recommended_word_count: int
-
-class BlogGenerationRequest(BaseModel):
-    topic: str
-    keywords: List[str]
-    outline: str
-    recommended_word_count: int
-
-class BlogGenerationResponse(BaseModel):
-    blog: str
 
 class GenerateOutlineRequest(BaseModel):
     topic: str
@@ -65,7 +45,7 @@ class GenerateOutlineResponse(BaseModel):
     keywords: List[str]
     recommended_word_count: int
 
-# ---------- Endpoints ----------
+# ---------- ROUTES ----------
 
 @app.post("/generate-topics", response_model=TopicResponse)
 async def generate_topics(request: TopicRequest):
@@ -102,53 +82,53 @@ async def generate_topics(request: TopicRequest):
 @app.post("/generate-outline", response_model=GenerateOutlineResponse)
 async def generate_outline(request: GenerateOutlineRequest):
     try:
+        # 1. Call Serper API
         serper_url = "https://google.serper.dev/search"
-        headers = {
-            "X-API-KEY": SERPER_API_KEY
-        }
-        payload = {
-            "q": request.topic,
-            "num": 3
-        }
-        serper_response = requests.post(serper_url, json=payload, headers=headers)
-        serper_response.raise_for_status()
-        search_data = serper_response.json()
+        headers = {"X-API-KEY": SERPER_API_KEY}
+        payload = {"q": request.topic, "num": 3}
 
-        organic_results = search_data.get("organic", [])
-        urls = [item.get("link") for item in organic_results[:3] if item.get("link")]
+        response = requests.post(serper_url, json=payload, headers=headers)
+        response.raise_for_status()
+        results = response.json()
+
+        organic = results.get("organic", [])
+        urls = [item.get("link") for item in organic[:3] if item.get("link")]
+
         if not urls:
-            raise ValueError("No valid URLs found in search results.")
+            raise ValueError("No URLs found from Serper.")
 
+        # 2. Scrape pages
         combined_text = ""
         for url in urls:
             try:
                 page = requests.get(url, timeout=10)
                 page.raise_for_status()
                 soup = BeautifulSoup(page.text, "html.parser")
-                text = soup.get_text(separator=" ").strip()
+                text = soup.get_text(separator=" ")
                 words = text.split()
-                truncated = " ".join(words[:2000])
-                combined_text += truncated + "\n"
+                snippet = " ".join(words[:2000])  # limit each page
+                combined_text += snippet + "\n"
             except Exception:
                 continue
 
         if not combined_text:
-            raise ValueError("No usable content could be extracted from fetched pages.")
+            raise ValueError("No content extracted.")
 
+        # 3. Compose prompt
         keyword_clause = f"Focus on incorporating the following keywords: {', '.join(request.keywords)}." if request.keywords else ""
+
         prompt = (
-            f"You are an expert SEO content strategist. Based on the reference content below, "
-            f"generate a detailed blog outline, suggest 10-15 SEO-friendly keywords, and recommend a word count for the article."
+            f"generate a detailed blog outline in HTML format using <h2> for section titles and <ul><li> for bullet points. Also suggest 10-15 SEO-friendly keywords, and recommend a word count for the article.\n"
             f"Topic: {request.topic}\nIntent: {request.intent}\nAudience: {request.audience}\n{keyword_clause}\n\n"
-            f"REFERENCE CONTENT:\n{combined_text}\n\n"
+            f"REFERENCE CONTENT:\n{combined_text[:5000]}\n\n"  # Truncate input to avoid token overflow
             f"Return in this format:\n"
-            f"Outline:\n<outline here>\n\nKeywords:\n1. keyword1\n...\n\nRecommended Word Count:\n<just the number>"
+            f"Outline:\n<html-formatted-outline>\n\nKeywords:\n1. keyword1\n...\n\nRecommended Word Count:\n<just the number>"
         )
 
         completion = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a skilled SEO blog planner."},
+                {"role": "system", "content": "You are a skilled SEO blog planner who writes clean HTML."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.4,
@@ -179,7 +159,7 @@ async def generate_outline(request: GenerateOutlineRequest):
                 in_outline = in_keywords = False
                 continue
             if in_outline:
-                outline += line + "\n"
+                outline += line
             elif in_keywords:
                 kw = line.lstrip("0123456789.-) ").strip()
                 if kw:
@@ -193,7 +173,7 @@ async def generate_outline(request: GenerateOutlineRequest):
             raise ValueError("Incomplete response parsing.")
 
         return GenerateOutlineResponse(
-            outline=outline.strip(),
+            outline=outline.replace("", "").strip(),
             keywords=keywords,
             recommended_word_count=word_count
         )
