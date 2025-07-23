@@ -49,18 +49,24 @@ class GenerateBlogRequest(BaseModel):
     outline: str
     keywords: List[str]
     recommended_word_count: int
-    tone: Optional[str] = "Informative"
-    audience: Optional[str] = "General"
-    intent: Optional[str] = "Educational"
+    tone: Optional[str] = "neutral"
+    intent: Optional[str] = "inform"
+    audience: Optional[str] = "general"
 
 class GenerateBlogResponse(BaseModel):
     blog_html: str
 
 class LinkedInPostRequest(BaseModel):
     blog_text: str
-    blog_link: Optional[str] = "https://example.com/blog-post"
+    blog_link: Optional[str] = None
 
 class LinkedInPostResponse(BaseModel):
+    linkedin_post: str
+
+class LinkedInTopicRequest(BaseModel):
+    topic: str
+
+class LinkedInTopicResponse(BaseModel):
     linkedin_post: str
 
 # ---------- ENDPOINTS ----------
@@ -214,10 +220,11 @@ async def generate_blog(request: GenerateBlogRequest):
         for heading in sections:
             section_prompt = (
                 f"You are an expert blog writer. Write an HTML-formatted section for the blog heading '{heading}'.\n"
-                f"Audience: {request.audience}. Intent: {request.intent}. Tone: {request.tone}.\n"
+                f"Tone: {request.tone}\nIntent: {request.intent}\nAudience: {request.audience}\n"
                 f"Use the following keywords naturally: {', '.join(request.keywords)}.\n"
-                f"Ensure SEO optimization and aim for approximately {words_per_section} words.\n"
-                f"Use <h2> for the heading, <p> for paragraphs, and <ul><li> for any lists. Avoid emojis and markdown.\n\n"
+                f"Keep it around {words_per_section} words.\n"
+                f"Use <h2> for the heading, <p> for paragraphs, and <ul><li> for any lists.\n"
+                f"Avoid emojis and markdown. Write HTML only.\n\n"
                 f"REFERENCE MATERIAL:\n{reference_content[:3000]}"
             )
 
@@ -245,15 +252,16 @@ async def generate_blog(request: GenerateBlogRequest):
 async def linkedin_blog_cta(request: LinkedInPostRequest):
     try:
         prompt = (
-            "Write a LinkedIn post with a strong CTA that encourages readers to click through to a blog post.\n"
-            "Summarize the key value of the blog in 2-3 sentences and end with a CTA that includes the link.\n"
-            f"BLOG TEXT:\n{request.blog_text}\n\nLink: {request.blog_link}"
+            "Write a LinkedIn post summarizing the blog content and include a compelling CTA to read the full blog."
+            f"\n\nBLOG TEXT:\n{request.blog_text}\n\n"
         )
+        if request.blog_link:
+            prompt += f"Include this link at the end: {request.blog_link}"
 
         completion = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a LinkedIn marketing expert."},
+                {"role": "system", "content": "You are a professional LinkedIn content strategist."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -263,5 +271,49 @@ async def linkedin_blog_cta(request: LinkedInPostRequest):
         post = completion.choices[0].message.content.strip()
         return LinkedInPostResponse(linkedin_post=post)
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/linkedin_general_emojis", response_model=LinkedInTopicResponse)
+async def linkedin_general_emojis(request: LinkedInTopicRequest):
+    try:
+        prompt = (
+            f"Write an engaging LinkedIn post about the topic: '{request.topic}'.\n"
+            f"The post should include emojis and be formatted for professional engagement."
+        )
+        completion = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a LinkedIn post writing expert."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.8,
+            max_tokens=500
+        )
+        post = completion.choices[0].message.content.strip()
+        return LinkedInTopicResponse(linkedin_post=post)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/linkedin_general_plain", response_model=LinkedInTopicResponse)
+async def linkedin_general_plain(request: LinkedInTopicRequest):
+    try:
+        prompt = (
+            f"Write an engaging LinkedIn post about the topic: '{request.topic}'.\n"
+            f"The post should NOT contain any emojis and should maintain a professional tone."
+        )
+        completion = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a LinkedIn post writing expert."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.8,
+            max_tokens=500
+        )
+        post = completion.choices[0].message.content.strip()
+        return LinkedInTopicResponse(linkedin_post=post)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
