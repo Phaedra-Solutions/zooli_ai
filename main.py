@@ -49,12 +49,19 @@ class GenerateBlogRequest(BaseModel):
     outline: str
     keywords: List[str]
     recommended_word_count: int
-    intent: str
-    audience: str
-    tone: str
+    tone: Optional[str] = "Informative"
+    audience: Optional[str] = "General"
+    intent: Optional[str] = "Educational"
 
 class GenerateBlogResponse(BaseModel):
     blog_html: str
+
+class LinkedInPostRequest(BaseModel):
+    blog_text: str
+    blog_link: Optional[str] = "https://example.com/blog-post"
+
+class LinkedInPostResponse(BaseModel):
+    linkedin_post: str
 
 # ---------- ENDPOINTS ----------
 
@@ -206,19 +213,18 @@ async def generate_blog(request: GenerateBlogRequest):
 
         for heading in sections:
             section_prompt = (
-                f"You are an expert SEO blog writer. Write an HTML-formatted section for the blog heading '{heading}'.\n"
-                f"Tone: {request.tone}. Intent: {request.intent}. Audience: {request.audience}.\n"
-                f"Use all of these keywords naturally throughout the blog: {', '.join(request.keywords)}.\n"
-                f"Aim for approximately {words_per_section} words.\n"
-                f"Use <h2> for the heading, <p> for paragraphs, and <ul><li> for any lists.\n"
-                f"Avoid emojis and markdown. Output valid HTML only.\n"
+                f"You are an expert blog writer. Write an HTML-formatted section for the blog heading '{heading}'.\n"
+                f"Audience: {request.audience}. Intent: {request.intent}. Tone: {request.tone}.\n"
+                f"Use the following keywords naturally: {', '.join(request.keywords)}.\n"
+                f"Ensure SEO optimization and aim for approximately {words_per_section} words.\n"
+                f"Use <h2> for the heading, <p> for paragraphs, and <ul><li> for any lists. Avoid emojis and markdown.\n\n"
                 f"REFERENCE MATERIAL:\n{reference_content[:3000]}"
             )
 
             response = client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "You generate high quality SEO optimized HTML blog content."},
+                    {"role": "system", "content": "You generate clean HTML blog content."},
                     {"role": "user", "content": section_prompt}
                 ],
                 temperature=0.5,
@@ -230,6 +236,32 @@ async def generate_blog(request: GenerateBlogRequest):
             full_blog += section_html
 
         return GenerateBlogResponse(blog_html=full_blog)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/linkedin_blog_cta", response_model=LinkedInPostResponse)
+async def linkedin_blog_cta(request: LinkedInPostRequest):
+    try:
+        prompt = (
+            "Write a LinkedIn post with a strong CTA that encourages readers to click through to a blog post.\n"
+            "Summarize the key value of the blog in 2-3 sentences and end with a CTA that includes the link.\n"
+            f"BLOG TEXT:\n{request.blog_text}\n\nLink: {request.blog_link}"
+        )
+
+        completion = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a LinkedIn marketing expert."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
+
+        post = completion.choices[0].message.content.strip()
+        return LinkedInPostResponse(linkedin_post=post)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
