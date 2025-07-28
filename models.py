@@ -53,3 +53,11 @@ class LinkedInImagePostRequest(BaseModel):
 class LinkedInImagePostResponse(BaseModel):
     image_url: str
     post_text: str
+
+class AIImageRequest(BaseModel):
+    content: str
+    num_variations: Optional[int] = 3  # Default to 3 variations
+
+class AIImageResponse(BaseModel):
+    prompt: str
+    image_urls: List[str]
